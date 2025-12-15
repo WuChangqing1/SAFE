@@ -15,6 +15,8 @@ from transformers import BertTokenizer
 # from transformers import AdamW
 from utils import FocalLoss
 
+from torch.amp import autocast
+
 # 权重初始化，默认xavier
 def init_network(model, method='xavier', exclude='embedding', seed=123):
     for name, w in model.named_parameters():
@@ -41,103 +43,70 @@ from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 
 def train(config, model, train_iter, dev_iter, test_iter, train_data):
-
-    # class_counts = np.array([175, 486, 201, 259, 37, 402, 346])  # 你实际的类别样本数替换
-    # # class_counts = np.array([175, 486, 201, 259, 402, 346])  # 你实际的类别样本数替换
-    # weights = 2.0 / class_counts
-    # weights = weights / weights.sum() * len(class_counts)
-    # weights = torch.tensor(weights, dtype=torch.float).to(config.device)
-    
-    
-    # 修改 train 函数中的权重计算
-    # class_counts = np.array([175, 486, 201, 259, 402, 346])
+    # 原有初始化代码不变
     class_counts = np.array([175, 486, 201, 259, 37, 402, 346])
-    # median = np.median(class_counts)
-    # weights = median / class_counts  # 中位数归一化
-    # weights = torch.tensor(weights, dtype=torch.float).to(config.device)
-    weights = 1.0 / np.sqrt(class_counts)  # 使用平方根缓解极端权重
+    weights = 1.0 / np.sqrt(class_counts)
     weights = weights / weights.sum() * len(class_counts)
     weights = torch.tensor(weights, dtype=torch.float).to(config.device)
     config.weights = weights
-
+    
     start_time = time.time()
     model.train()
-
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-
     optimizer_grouped_parameters = [
-        {
-            'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
-            'weight_decay': 0.01
-        },
-        {
-            'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
-            'weight_decay': 0.0
-        }
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-
-    # 修改优化器设置
-    optimizer = AdamW(
-        optimizer_grouped_parameters, 
-        lr=config.learning_rate,
-        weight_decay=0.01,  # 增加权重衰减
-        eps=1e-8
-    )
-
-    # 调整学习率调度器
+    optimizer = AdamW(optimizer_grouped_parameters, lr=config.learning_rate, weight_decay=0.01, eps=1e-8)
     total_steps = len(train_iter) * config.num_epochs
-    warmup_steps = int(total_steps * 0.1)  # 增加到10%预热
-
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps
-    )
-
+    warmup_steps = int(total_steps * 0.1)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+    
+    scaler = config.scaler  # 获取梯度缩放器
     total_batch = 0
     dev_best_loss = float('inf')
     last_improve = 0
     flag = False
-    model.train()
 
     for epoch in range(config.num_epochs):
         print('Epoch [{}/{}]'.format(epoch + 1, config.num_epochs))
         for i, (trains, labels) in enumerate(train_iter):
-            outputs = model(trains)
-            model.zero_grad()
-            # 使用带标签平滑的交叉熵
-            loss = F.cross_entropy(outputs, labels, weight=weights, label_smoothing=0.1)
-            # 添加L2正则化
-            l2_lambda = 0.01
-            l2_norm = sum(p.pow(2.0).sum() for p in model.parameters())
-            loss = loss + l2_lambda * l2_norm
-
-            loss.backward()
+            with autocast('cuda'):  # 开启混合精度
+                outputs = model(trains)
+                cls_loss = F.cross_entropy(outputs, labels, weight=weights, label_smoothing=0.1)
+                l2_lambda = 0.01
+                l2_norm = sum(p.pow(2.0).sum() for p in model.parameters())
+                base_loss = cls_loss + l2_lambda * l2_norm
             
-            # 梯度裁剪
+            model.zero_grad()
+            scaler.scale(base_loss).backward()  # 缩放损失
+            
+            # 若集成FGM，需适配混合精度：
+            # fgm.attack()
+            # with autocast():
+            #     outputs_adv = model(trains)
+            #     adv_loss = F.cross_entropy(outputs_adv, labels, weight=weights, label_smoothing=0.1)
+            # scaler.scale(adv_loss).backward()
+            # fgm.restore()
+            
+            scaler.unscale_(optimizer)  # 恢复梯度
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            optimizer.step()
-            scheduler.step()  # 更新学习率
-
+            scaler.step(optimizer)  # 缩放优化器步骤
+            scaler.update()  # 更新缩放器
+            scheduler.step()
+            
+            # 保留原日志打印、早停逻辑
             if total_batch % 100 == 0:
                 true = labels.data.cpu()
                 predic = torch.max(outputs.data, 1)[1].cpu()
                 train_acc = metrics.accuracy_score(true, predic)
-                # dev_acc, dev_loss = evaluate(config, model, dev_iter)
-
-                dev_acc, dev_loss = evaluate(config, model, dev_iter)  # 训练时用100次预测
-
+                dev_acc, dev_loss = evaluate(config, model, dev_iter)
                 if dev_loss < dev_best_loss:
                     dev_best_loss = dev_loss
-
-                     # 自动创建目录
-                    save_dir = os.path.dirname(config.save_path)  # 获取目录路径：CSTA-Corpus/saved_dict
+                    save_dir = os.path.dirname(config.save_path)
                     if not os.path.exists(save_dir):
                         os.makedirs(save_dir, exist_ok=True)
-                        print(f"Created directory: {save_dir}")
-
                     torch.save(model.state_dict(), config.save_path)
                     improve = '*'
                     last_improve = total_batch
@@ -145,9 +114,9 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
                     improve = ''
                 time_dif = get_time_dif(start_time)
                 msg = 'Iter: {0:>6},  Train Loss: {1:>5.2},  Train Acc: {2:>6.2%},  Val Loss: {3:>5.2},  Val Acc: {4:>6.2%},  Time: {5} {6}'
-                print(msg.format(total_batch, loss.item(), train_acc, dev_loss, dev_acc, time_dif, improve))
+                print(msg.format(total_batch, base_loss.item(), train_acc, dev_loss, dev_acc, time_dif, improve))
                 model.train()
-
+            
             total_batch += 1
             if total_batch - last_improve > config.require_improvement:
                 print("No optimization for a long time, auto-stopping...")
@@ -222,7 +191,7 @@ def evaluate(config, model, data_iter, test=False):
     else:
         return acc, loss_total/len(data_iter)
 
-def analyze_correctly_classified(config, correct_samples, tokenizer, max_samples=5):
+def analyze_correctly_classified(config, correct_samples, tokenizer, max_samples=0):
     print("\n分析正确分类样本的关键特征...")
     
     for idx, sample in enumerate(correct_samples[:max_samples]):
@@ -252,7 +221,7 @@ def analyze_correctly_classified(config, correct_samples, tokenizer, max_samples
             print(f"分析出错：{str(e)}")
         print("="*80)    
     
-def analyze_misclassified(config, wrong_samples, tokenizer, max_samples=5):
+def analyze_misclassified(config, wrong_samples, tokenizer, max_samples=0):
     """
     增强安全性的误分类样本分析函数
     """

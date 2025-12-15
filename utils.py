@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import time
 from datetime import timedelta
+from collections import defaultdict
+import numpy as np
 
 PAD, CLS = '[PAD]', '[CLS]'  # padding符号, bert中综合信息符号
 
@@ -126,3 +128,54 @@ class FocalLoss(nn.Module):
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
         return focal_loss.mean()
 
+class ContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, embeddings):
+        batch_size = embeddings.size(0) // 2
+        if batch_size == 0:
+            return torch.tensor(0.0).to(embeddings.device)
+        
+        # 1. 创建主对角线矩阵（自身样本掩码）
+        mask_self = torch.eye(batch_size * 2, dtype=torch.bool).to(embeddings.device)
+        
+        # 2. 创建移位batch_size的对角线矩阵（正样本对掩码）
+        # 方法：创建单位矩阵后，上下移位batch_size行
+        mask_positive = torch.eye(batch_size * 2, dtype=torch.bool).to(embeddings.device)
+        mask_positive = torch.roll(mask_positive, shifts=batch_size, dims=0)  # 关键修正：用roll实现移位
+        
+        # 3. 合并掩码（排除自身和正样本对，只保留负样本）
+        mask = mask_self | mask_positive
+        mask = ~mask
+        
+        # 后续逻辑保持不变
+        sim_matrix = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
+        sim_matrix = sim_matrix / self.temperature
+        exp_sim = torch.exp(sim_matrix) * (~mask)
+        log_prob = sim_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True))
+        
+        pos_pairs = torch.cat([torch.arange(batch_size, device=embeddings.device), 
+                              torch.arange(batch_size, device=embeddings.device) + batch_size])
+        pos_sim = log_prob[pos_pairs, pos_pairs - batch_size if batch_size > 0 else pos_pairs]
+        return -pos_sim.mean()
+    
+def load_static_embedding(emb_path, tokenizer, embed_dim=300):
+    """加载静态词向量（兼容混合精度，返回float32张量）"""
+    emb_dict = defaultdict(lambda: np.random.normal(0, 0.01, embed_dim).astype(np.float32))
+    with open(emb_path, 'r', encoding='utf-8') as f:
+        for line in tqdm(f):
+            line = line.strip().split()
+            if len(line) != embed_dim + 1:
+                continue
+            word = line[0]
+            vec = np.array([float(x) for x in line[1:]], dtype=np.float32)
+            emb_dict[word] = vec
+    
+    vocab_size = tokenizer.vocab_size
+    emb_matrix = np.zeros((vocab_size, embed_dim), dtype=np.float32)
+    for token, idx in tokenizer.vocab.items():
+        emb_matrix[idx] = emb_dict[token]
+    
+    return torch.tensor(emb_matrix, dtype=torch.float32)  # 保持float32，兼容混合精度

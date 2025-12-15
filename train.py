@@ -6,10 +6,7 @@ import json
 import random
 import numpy as np
 
-from models.lgpn import LGPNFramework
 from data.processor import SciTechDataset, EpisodeGenerator
-from utils.prompt_manager import PromptManager
-from utils.loss import LGPNLoss, LabelSeparationLoss
 
 def setup_seed(seed=42):
     """设置随机种子"""
