@@ -28,7 +28,7 @@ class Config(object):
         self.require_improvement = 1200
         self.num_classes = len(self.class_list)
         # self.num_epochs = 8
-        self.num_epochs = 11
+        self.num_epochs = 10
         self.batch_size = 64
         self.pad_size = 64
         self.learning_rate = 3e-5
