@@ -12,7 +12,7 @@ from torch.amp import GradScaler
 
 parser = argparse.ArgumentParser(description='Chinese Text Classification')
 parser.add_argument('--model', type=str, required=True, help='choose a model: Bert, ERNIE')
-parser.add_argument('--static-emb-path', type=str, default='./pretrained/bert_pretrained/vocab.txt', help='静态词向量文件路径')
+parser.add_argument('--static-emb-path', type=str, default='./pretrained/bert_pretrained/sgns.merge.char', help='静态词向量文件路径')
 args = parser.parse_args()
 
 if __name__ == '__main__':
