@@ -31,7 +31,7 @@ class Config(object):
         self.num_epochs = 10
         self.batch_size = 64
         self.pad_size = 64
-        self.learning_rate = 3e-5
+        self.learning_rate = 2e-5
         # self.learning_rate = 1e-6 # 结果是69.77%
         # self.learning_rate = 2e-5
         # D:\CodingData\Github\MALTEC\pretrained\Erlangshen-DeBERTa_pretrained
@@ -45,7 +45,7 @@ class Config(object):
         # 为了形状匹配，需要将hidden_size改为768
         # self.hidden_size = 1024
         self.hidden_size = 768
-        self.hidden_dropout_prob = 0.5
+        self.hidden_dropout_prob = 0.1
         self.layer_norm_eps = 1e-7
         self.weight_decay = 0.1
         self.max_grad_norm = 1.0

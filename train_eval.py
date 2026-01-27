@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn import metrics
 import time
-from utils import get_time_dif
+from utils import FGM, get_time_dif
 # from pytorch_pretrained.optimization import BertAdam
 from utils import build_dataset, build_iterator, get_time_dif
 import csv
@@ -64,6 +64,10 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
     
     scaler = config.scaler  # 获取梯度缩放器
+
+    # 新增FGM对抗训练
+    fgm = FGM(model)
+
     total_batch = 0
     dev_best_loss = float('inf')
     last_improve = 0
@@ -82,13 +86,16 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
             model.zero_grad()
             scaler.scale(base_loss).backward()  # 缩放损失
             
-            # 若集成FGM，需适配混合精度：
-            # fgm.attack()
-            # with autocast():
-            #     outputs_adv = model(trains)
-            #     adv_loss = F.cross_entropy(outputs_adv, labels, weight=weights, label_smoothing=0.1)
-            # scaler.scale(adv_loss).backward()
-            # fgm.restore()
+            # 2. ### 新增：FGM 对抗训练逻辑
+            fgm.attack(epsilon=1.0, emb_name='word_embeddings') 
+            with autocast('cuda'): # 对抗样本的前向传播也要用混合精度
+                outputs_adv = model(trains)
+                # 计算对抗损失
+                loss_adv = F.cross_entropy(outputs_adv, labels, weight=weights, label_smoothing=0.1)
+            
+            scaler.scale(loss_adv).backward() # 累加对抗梯度
+            
+            fgm.restore(emb_name='word_embeddings') # 恢复原始 Embedding
             
             scaler.unscale_(optimizer)  # 恢复梯度
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
