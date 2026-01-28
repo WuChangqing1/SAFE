@@ -32,13 +32,8 @@ class Config(object):
         self.batch_size = 64
         self.pad_size = 64
         self.learning_rate = 2e-5
-        # self.learning_rate = 1e-6 # 结果是69.77%
         # self.learning_rate = 2e-5
-        # D:\CodingData\Github\MALTEC\pretrained\Erlangshen-DeBERTa_pretrained
-        # self.bert_path = './pretrained/Erlangshen-DeBERTa_pretrained'
-        # self.bert_path = r'D:\CodingData\Github\MALTEC\pretrained\bert_pretrained'
         self.bert_path = './pretrained/bert_pretrained'
-        # self.bert_path = './pretrained/bert_pretrained_new'
 
         self.tokenizer = BertTokenizer.from_pretrained(self.bert_path)
 
