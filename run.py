@@ -5,7 +5,8 @@ import numpy as np
 from train_eval import train, init_network
 from importlib import import_module
 import argparse
-from utils import build_dataset, build_iterator, get_time_dif, load_static_embedding  # 导入加载函数
+# 1. 重新把 load_static_embedding 导回来
+from utils import build_dataset, build_iterator, get_time_dif, load_static_embedding
 import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 from torch.amp import GradScaler
@@ -35,14 +36,18 @@ if __name__ == '__main__':
     print("Time usage:", time_dif)
     test_iter = build_iterator(test_data, config, return_contents=True)
     
-    # 加载静态词向量（float32，兼容混合精度）
-    print("Loading static embedding...")
-    static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer)
-    
     # 初始化混合精度缩放器
     scaler = GradScaler('cuda')
     config.scaler = scaler
     
-    # 初始化模型（传入静态词向量矩阵）
-    model = x.Model(config, static_emb_matrix=static_emb_matrix).to(config.device)
+    if model_name == 'bert':
+        print(f"检测到模型为 {model_name}，正在加载静态词向量 (这可能需要一点时间)...")
+        # 只有 bert 才加载大文件
+        static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer)
+        # 传入矩阵初始化
+        model = x.Model(config, static_emb_matrix=static_emb_matrix).to(config.device)
+    else:
+        print(f"检测到模型为 {model_name}，无需静态词向量，快速启动。")
+        model = x.Model(config).to(config.device)
+
     train(config, model, train_iter, dev_iter, test_iter, train_data)

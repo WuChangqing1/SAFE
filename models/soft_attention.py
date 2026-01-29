@@ -36,7 +36,7 @@ class Config(object):
         self.dropout = 0.1
 
 class Model(nn.Module):
-    def __init__(self, config, static_emb_matrix=None):
+    def __init__(self, config):
         super(Model, self).__init__()
         self.bert = BertModel.from_pretrained(config.bert_path)
         for param in self.bert.parameters():
