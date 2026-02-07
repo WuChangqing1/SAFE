@@ -17,7 +17,7 @@ parser.add_argument('--static-emb-path', type=str, default='./pretrained/bert_pr
 args = parser.parse_args()
 
 if __name__ == '__main__':
-    dataset = 'CSTA-CorpusV0'
+    dataset = 'CSTA-Corpus'
     model_name = args.model
     x = import_module('models.' + model_name)
     config = x.Config(dataset)

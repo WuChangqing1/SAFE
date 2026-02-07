@@ -5,19 +5,17 @@ import torch.nn.functional as F
 from sklearn import metrics
 import time
 from utils import FGM, get_time_dif
-# from pytorch_pretrained.optimization import BertAdam
 from utils import build_dataset, build_iterator, get_time_dif
 import csv
 import os
 import matplotlib.pyplot as plt
-# from pytorch_pretrained import BertTokenizer  # 确保使用兼容版本的tokenizer
 from transformers import BertTokenizer
-# from transformers import AdamW
+from transformers import get_linear_schedule_with_warmup
+from torch.optim import AdamW
 from utils import FocalLoss
-
 from torch.amp import autocast
 
-# 权重初始化，默认xavier
+# 权重初始化
 def init_network(model, method='xavier', exclude='embedding', seed=123):
     for name, w in model.named_parameters():
         if exclude not in name:
@@ -35,15 +33,11 @@ def init_network(model, method='xavier', exclude='embedding', seed=123):
             else:
                 pass
 
-
-
-# 2222222222222222222222222222222222222222222222
-from transformers import get_linear_schedule_with_warmup
-# from transformers.optimization import AdamW
-from torch.optim import AdamW
-
 def train(config, model, train_iter, dev_iter, test_iter, train_data):
-    # 原有初始化代码不变
+    # 1. 初始化显存统计 (用于论文显存分析)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
     class_counts = np.array([175, 486, 201, 259, 37, 402, 346])
     weights = 1.0 / np.sqrt(class_counts)
     weights = weights / weights.sum() * len(class_counts)
@@ -65,8 +59,11 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
     
     scaler = config.scaler  # 获取梯度缩放器
 
-    # 新增FGM对抗训练
+    # FGM对抗训练初始化
     fgm = FGM(model)
+    # 【新增】获取动态 epsilon，默认为 1.0 (兼容普通训练和敏感性分析)
+    epsilon_val = getattr(config, 'fgm_epsilon', 1.2)
+    print(f"当前 FGM 对抗扰动幅度 epsilon: {epsilon_val}")
 
     total_batch = 0
     dev_best_loss = float('inf')
@@ -86,11 +83,12 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
             model.zero_grad()
             scaler.scale(base_loss).backward()  # 缩放损失
             
-            # 2. ### 新增：FGM 对抗训练逻辑
-            fgm.attack(epsilon=1.0, emb_name='word_embeddings') 
+            # 2. FGM 对抗训练逻辑
+            # 【修改】使用动态 epsilon
+            fgm.attack(epsilon=epsilon_val, emb_name='word_embeddings') 
+            
             with autocast('cuda'): # 对抗样本的前向传播也要用混合精度
                 outputs_adv = model(trains)
-                # 计算对抗损失
                 loss_adv = F.cross_entropy(outputs_adv, labels, weight=weights, label_smoothing=0.1)
             
             scaler.scale(loss_adv).backward() # 累加对抗梯度
@@ -103,7 +101,6 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
             scaler.update()  # 更新缩放器
             scheduler.step()
             
-            # 保留原日志打印、早停逻辑
             if total_batch % 100 == 0:
                 true = labels.data.cpu()
                 predic = torch.max(outputs.data, 1)[1].cpu()
@@ -119,9 +116,18 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
                     last_improve = total_batch
                 else:
                     improve = ''
+                
                 time_dif = get_time_dif(start_time)
-                msg = 'Iter: {0:>6},  Train Loss: {1:>5.2},  Train Acc: {2:>6.2%},  Val Loss: {3:>5.2},  Val Acc: {4:>6.2%},  Time: {5} {6}'
-                print(msg.format(total_batch, base_loss.item(), train_acc, dev_loss, dev_acc, time_dif, improve))
+                
+                # 【新增】显存监控逻辑
+                mem_info = ""
+                if torch.cuda.is_available():
+                    # 获取真实的峰值显存 (MB)
+                    max_mem = torch.cuda.max_memory_allocated() / 1024 / 1024
+                    mem_info = f" | Max Mem: {max_mem:.0f}MB"
+
+                msg = 'Iter: {0:>6},  Train Loss: {1:>5.2},  Train Acc: {2:>6.2%},  Val Loss: {3:>5.2},  Val Acc: {4:>6.2%},  Time: {5} {6} {7}'
+                print(msg.format(total_batch, base_loss.item(), train_acc, dev_loss, dev_acc, time_dif, improve, mem_info))
                 model.train()
             
             total_batch += 1
@@ -131,72 +137,10 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
                 break
         if flag:
             break
-    test(config, model, test_iter)
     
-    
-# def evaluate(config, model, data_iter, test=False):
-#     model.eval()
-#     loss_total = 0
-#     predict_all = np.array([], dtype=int)
-#     labels_all = np.array([], dtype=int)
-#     wrong_samples = [] 
-#     correct_samples = []  # 新增正确样本收集
+    # 【修改】train 函数现在返回 test 的结果，方便外部脚本收集数据
+    return test(config, model, test_iter)
 
-#     with torch.no_grad():
-#         for batch in data_iter:
-#             if test:
-#                 (inputs, seq_len, mask), labels, contents = batch
-#             else:
-#                 (inputs, seq_len, mask), labels = batch
-            
-#             outputs = model((inputs, seq_len, mask))
-#             loss = F.cross_entropy(outputs, labels)
-#             loss_total += loss
-            
-#             # 获取中间结果
-#             attn_weights = model.attention_weights.cpu().numpy()
-#             probabilities = model.probabilities.cpu().numpy()
-#             hidden_states = model.hidden_states.cpu().numpy()
-            
-#             labels_np = labels.cpu().numpy()
-#             predic = torch.max(outputs, 1)[1].cpu().numpy()
-
-#             labels_all = np.append(labels_all, labels_np)
-#             predict_all = np.append(predict_all, predic)
-
-#             if test:
-#                 # 保存错误样本和正确样本的详细信息
-#                 batch_size = inputs.size(0)
-#                 for i in range(batch_size):
-#                     sample_data = {
-#                         'text': contents[i],
-#                         'true': labels_np[i],
-#                         'pred': predic[i],
-#                         'attention': attn_weights[i],
-#                         'prob': probabilities[i],
-#                         'hidden': hidden_states[i],
-#                         'input_ids': inputs[i].cpu().numpy(),
-#                         'mask': mask[i].cpu().numpy(),
-#                         'seq_len': seq_len[i].item()
-#                     }
-#                     if predic[i] != labels_np[i]:
-#                         wrong_samples.append(sample_data)
-#                     else:  # 新增正确样本保存
-#                         correct_samples.append(sample_data)
-
-#     acc = metrics.accuracy_score(labels_all, predict_all)
-#     if test:
-#         return (acc, 
-#                 loss_total/len(data_iter), 
-#                 metrics.classification_report(labels_all, predict_all, target_names=config.class_list, digits=4),
-#                 metrics.confusion_matrix(labels_all, predict_all),
-#                 wrong_samples,
-#                 correct_samples,
-#                 labels_all,  # 新增返回
-#                 predict_all  # 新增返回
-#                )
-#     else:
-#         return acc, loss_total/len(data_iter)
 
 def evaluate(config, model, data_iter, test=False):
     model.eval()
@@ -217,23 +161,20 @@ def evaluate(config, model, data_iter, test=False):
             loss = F.cross_entropy(outputs, labels)
             loss_total += loss
             
-            # --- 修改开始：兼容性处理 ---
-            # 1. 安全获取 Attention 权重 (TextCNN/RCNN 可能没有)
+            # --- 兼容性处理 ---
             attn_weights = getattr(model, 'attention_weights', None)
             if attn_weights is not None:
                 attn_weights = attn_weights.cpu().numpy()
             
-            # 2. 安全获取概率分布 (如果没有保存，则现场计算)
             if hasattr(model, 'probabilities') and model.probabilities is not None:
                 probabilities = model.probabilities.cpu().numpy()
             else:
                 probabilities = F.softmax(outputs, dim=1).cpu().numpy()
             
-            # 3. 安全获取 Hidden States
             hidden_states = getattr(model, 'hidden_states', None)
             if hidden_states is not None:
                 hidden_states = hidden_states.cpu().numpy()
-            # --- 修改结束 ---
+            # -----------------
             
             labels_np = labels.cpu().numpy()
             predic = torch.max(outputs, 1)[1].cpu().numpy()
@@ -252,7 +193,6 @@ def evaluate(config, model, data_iter, test=False):
                         'input_ids': inputs[i].cpu().numpy(),
                         'mask': mask[i].cpu().numpy(),
                         'seq_len': seq_len[i].item(),
-                        # 只有存在时才保存
                         'attention': attn_weights[i] if attn_weights is not None else None,
                         'hidden': hidden_states[i] if hidden_states is not None else None
                     }
@@ -277,154 +217,60 @@ def evaluate(config, model, data_iter, test=False):
 
 def analyze_correctly_classified(config, correct_samples, tokenizer, max_samples=0):
     print("\n分析正确分类样本的关键特征...")
-    
     for idx, sample in enumerate(correct_samples[:max_samples]):
         print(f"\n样本 {idx+1}/{len(correct_samples)}")
         print(f"文本：{sample['text'][:100]}...")
         print(f"真实标签：{config.class_list[sample['true']]}")
-        
         try:
             valid_length = sample.get('seq_len', sum(sample['mask']))
             input_ids = sample['input_ids'][:valid_length]
             tokens = tokenizer.convert_ids_to_tokens(input_ids)
             tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-            
             if not tokens:
                 print("有效token序列为空")
                 continue
-
-            if sample['attention'] is None:
-                # print("该模型无注意力权重，跳过注意力分析") # 可选打印
-                pass
-            else:
+            if sample['attention'] is not None:
                 attn_weights = sample['attention'][:len(tokens)]
                 sorted_indices = np.argsort(-attn_weights)[:5]
-            
-            print("\n关键注意力位置：")
-            for i, pos in enumerate(sorted_indices):
-                if pos < len(tokens):
-                    print(f"Top{i+1}: [{tokens[pos]}] ({pos}位) 权重：{attn_weights[pos]:.4f}")
-
+                print("\n关键注意力位置：")
+                for i, pos in enumerate(sorted_indices):
+                    if pos < len(tokens):
+                        print(f"Top{i+1}: [{tokens[pos]}] ({pos}位) 权重：{attn_weights[pos]:.4f}")
         except Exception as e:
             print(f"分析出错：{str(e)}")
         print("="*80)    
     
 def analyze_misclassified(config, wrong_samples, tokenizer, max_samples=0):
-    """
-    增强安全性的误分类样本分析函数
-    """
     print("\n正在分析误分类样本的中间结果...")
-    
     for idx, sample in enumerate(wrong_samples[:max_samples]):
-        # 基础信息展示
         print(f"\n样本 {idx+1}/{len(wrong_samples)}")
-        print(f"文本：{sample['text'][:100]}...")  # 截断长文本
+        print(f"文本：{sample['text'][:100]}...")
         print(f"真实标签：{config.class_list[sample['true']]}")
         print(f"预测标签：{config.class_list[sample['pred']]}")
-        
-        # ========== 安全获取token序列 ==========
         try:
-            # 使用预存的有效序列长度
             valid_length = sample.get('seq_len', sum(sample['mask']))
-            input_ids = sample['input_ids'][:valid_length]  # 截断有效部分
-            
-            # 转换token并过滤特殊符号
+            input_ids = sample['input_ids'][:valid_length]
             tokens = tokenizer.convert_ids_to_tokens(input_ids)
             tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-            
-            # 空序列保护
-            if not tokens:
-                print("警告：有效token序列为空，跳过分析")
-                continue
-        except Exception as e:
-            print(f"Token解析失败：{str(e)}")
-            continue
-
-        try:
-            if sample['attention'] is None:
-                # print("该模型无注意力权重，跳过注意力分析") # 可选打印
-                pass
-            else:
-                # 对齐注意力权重与token序列
-                attn_weights = sample['attention'][:len(tokens)]
-                
-                # 获取top注意力位置
-                sorted_indices = np.argsort(-attn_weights)[:5]  # 取前5个
-        except Exception as e:
-            print(f"注意力处理失败：{str(e)}")
-            continue
-
-        # ========== 概率分布展示 ==========
+            if not tokens: continue
+        except Exception as e: continue
+        
+        # 概率分布
         print("\n预测概率分布：")
         for cls_idx, prob in enumerate(sample['prob']):
             print(f"{config.class_list[cls_idx]}: {prob:.4f}")
 
-        # ========== 注意力分析 ==========
-        print("\n注意力权重分析：")
-        for i, pos in enumerate(sorted_indices):
-            # 边界检查双重保险
-            if pos >= len(tokens):
-                print(f"位置{pos}超出token序列范围（总长度{len(tokens)}）")
-                continue
-                
-            token = tokens[pos]
-            weight = attn_weights[pos]
-            print(f"Top{i+1}: [{token}] ({pos}位) 权重：{weight:.4f}")
-
-        # ========== 隐藏状态分析 ==========
-        try:
-            hidden = sample['hidden'][0]  # CLS向量
-            print("\n隐藏状态分析：")
-            print(f"均值：{np.mean(hidden):.4f}")
-            print(f"标准差：{np.std(hidden):.4f}")
-            print(f"最大值：{np.max(hidden):.4f}")
-        except Exception as e:
-            print(f"隐藏状态分析失败：{str(e)}")
-
+        # 注意力分析
+        if sample['attention'] is not None:
+            try:
+                attn_weights = sample['attention'][:len(tokens)]
+                sorted_indices = np.argsort(-attn_weights)[:5]
+                print("\n注意力权重分析：")
+                for i, pos in enumerate(sorted_indices):
+                    if pos >= len(tokens): continue
+                    print(f"Top{i+1}: [{tokens[pos]}] ({pos}位) 权重：{attn_weights[pos]:.4f}")
+            except Exception as e: pass
         print("="*80)
-
-
-# def save_correct_csv(samples, config, tokenizer, save_dir):
-#     csv_path = os.path.join(save_dir, "correct_details.csv")
-#     fieldnames = ['text', 'true_label'] + [f'prob_{cls}' for cls in config.class_list] + \
-#                  [f'top{i}_token' for i in range(1, 6)] + [f'top{i}_weight' for i in range(1, 6)]
-
-#     with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-#         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#         writer.writeheader()
-
-#         for sample in samples:
-#             row = {
-#                 'text': sample['text'],
-#                 'true_label': config.class_list[sample['true']],
-#             }
-#             # 概率分布
-#             for i, prob in enumerate(sample['prob']):
-#                 row[f'prob_{config.class_list[i]}'] = f"{prob:.4f}"
-
-#             # Top注意力词汇
-#             valid_length = sample.get('seq_len', sum(sample['mask']))
-#             input_ids = sample['input_ids'][:valid_length]
-#             tokens = tokenizer.convert_ids_to_tokens(input_ids)
-#             tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-
-#             if sample['attention'] is not None:
-#                 attn_weights = sample['attention'][:len(tokens)]
-#                 sorted_indices = np.argsort(-attn_weights)[:5]
-#             else:
-#                 pass
-
-#             for i in range(5):
-#                 if i < len(sorted_indices) and sorted_indices[i] < len(tokens):
-#                     row[f'top{i+1}_token'] = tokens[sorted_indices[i]]
-#                     row[f'top{i+1}_weight'] = f"{attn_weights[sorted_indices[i]]:.4f}"
-#                 else:
-#                     row[f'top{i+1}_token'] = ''
-#                     row[f'top{i+1}_weight'] = ''
-
-#             writer.writerow(row)
-
-#     print(f"正确分类样本细节已保存到 {csv_path}")
 
 def save_correct_csv(samples, config, tokenizer, save_dir):
     csv_path = os.path.join(save_dir, "correct_details.csv")
@@ -434,156 +280,98 @@ def save_correct_csv(samples, config, tokenizer, save_dir):
     with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-
         for sample in samples:
             row = {
                 'text': sample['text'],
                 'true_label': config.class_list[sample['true']],
             }
-            # 概率分布
             for i, prob in enumerate(sample['prob']):
                 row[f'prob_{config.class_list[i]}'] = f"{prob:.4f}"
-
-            # Top注意力词汇处理
+            
             valid_length = sample.get('seq_len', sum(sample['mask']))
             input_ids = sample['input_ids'][:valid_length]
             tokens = tokenizer.convert_ids_to_tokens(input_ids)
             tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
 
-            # === 修改开始：安全处理注意力权重 ===
-            sorted_indices = [] # 预先初始化为空列表
+            sorted_indices = []
             attn_weights = None
-            
-            # 只有当 attention 存在且不为 None 时才进行计算
             if sample.get('attention') is not None:
                 attn_weights = sample['attention'][:len(tokens)]
                 if len(attn_weights) > 0:
                     sorted_indices = np.argsort(-attn_weights)[:5]
 
             for i in range(5):
-                # 增加了对 attn_weights is not None 的判断
                 if i < len(sorted_indices) and sorted_indices[i] < len(tokens) and attn_weights is not None:
                     row[f'top{i+1}_token'] = tokens[sorted_indices[i]]
                     row[f'top{i+1}_weight'] = f"{attn_weights[sorted_indices[i]]:.4f}"
                 else:
                     row[f'top{i+1}_token'] = ''
                     row[f'top{i+1}_weight'] = ''
-            # === 修改结束 ===
-
             writer.writerow(row)
-
     print(f"正确分类样本细节已保存到 {csv_path}")
 
 def visualize_samples(samples, tokenizer, save_dir, prefix="correct", max_samples=20):
-    
-    for idx, sample in enumerate(samples[:max_samples]):
-        try:
-            # 注意力可视化
-            valid_length = sample['seq_len']
-            input_ids = sample['input_ids'][:valid_length]
-            tokens = tokenizer.convert_ids_to_tokens(input_ids)
-            tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-            attn = sample['attention'][:len(tokens)]
-        except Exception as e:
-            print(f"可视化错误 {prefix}样本{idx}: {str(e)}")
+    # 这里保留你的可视化逻辑占位，或者你可以完善它
+    pass
 
-                                    
-                                      
 def test(config, model, test_iter):
     model.load_state_dict(torch.load(config.save_path))
     model.eval()
     start_time = time.time()
-    # 修正解包变量数量，增加correct_samples
     test_acc, test_loss, test_report, test_confusion, wrong_samples, correct_samples, labels_all, predict_all = evaluate(config, model, test_iter, test=True)
-    # test_acc, test_loss, test_report, test_confusion, wrong_samples, correct_samples, labels_all, predict_all = evaluate(
-    #     config, model, test_iter, test=True, num_predictions=100)  # 测试时用100次预测
-    
-    
-    # test_acc, test_loss, test_report, test_confusion, wrong_samples, correct_samples = evaluate(config, model, test_iter, test=True)
     
     tokenizer = config.tokenizer
-    # analyze_misclassified(config, wrong_samples, tokenizer)
-    # analyze_correctly_classified(config, correct_samples, tokenizer)  # 确保使用correct_samples变量
-
-    # 确保这些变量在后续代码中可用
     if wrong_samples is not None:
-        analyze_misclassified(config, wrong_samples, tokenizer)
+        analyze_misclassified(config, wrong_samples, tokenizer, max_samples=5) # 限制打印数量防止刷屏
     if correct_samples is not None:
-        analyze_correctly_classified(config, correct_samples, tokenizer)
+        # analyze_correctly_classified(config, correct_samples, tokenizer, max_samples=5)
+        pass
 
     # 保存正确样本分析结果
     save_dir = os.path.join(config.dataset, "saved_dict")
     save_correct_csv(correct_samples, config, tokenizer, save_dir)
-    visualize_samples(correct_samples, tokenizer, save_dir, "correct")
+    # visualize_samples(correct_samples, tokenizer, save_dir, "correct")
 
-    # 保存到CSV（新增详细中间结果）
-    save_dir = os.path.join(config.dataset, "saved_dict")
+    # 保存误分类到CSV
     csv_path = os.path.join(save_dir, "misclassified_details.csv")
-    
-    # 定义CSV列头
-    fieldnames = ['text', 'true_label', 'pred_label']
-    fieldnames += [f'prob_{cls}' for cls in config.class_list]
-    for i in range(1, 6):
-        fieldnames += [f'top{i}_token', f'top{i}_weight']
+    fieldnames = ['text', 'true_label', 'pred_label'] + [f'prob_{cls}' for cls in config.class_list]
+    for i in range(1, 6): fieldnames += [f'top{i}_token', f'top{i}_weight']
     fieldnames += ['hidden_mean', 'hidden_std', 'hidden_max']
 
     with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-
         for sample in wrong_samples:
-            # 基础信息
             row = {
                 'text': sample['text'],
                 'true_label': config.class_list[sample['true']],
                 'pred_label': config.class_list[sample['pred']]
             }
-            
-            # 概率分布
             for i, prob in enumerate(sample['prob']):
                 row[f'prob_{config.class_list[i]}'] = f"{prob:.4f}"
             
-            # 新代码（修复索引越界）
             tokens = tokenizer.convert_ids_to_tokens(sample['input_ids'])
             tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-
-            # 获取实际有效的注意力权重（与过滤后的tokens对应）
-            valid_indices = [i for i, t in enumerate(tokens) if i < sample['seq_len']]  # 有效位置
-            valid_attention = sample['attention'][:sample['seq_len']][valid_indices]  # 对应权重
-
-            if len(valid_attention) > 0:
-                sorted_indices = np.argsort(-valid_attention)
-                for i in range(5):
-                    if i < len(sorted_indices) and sorted_indices[i] < len(tokens):
-                        pos = sorted_indices[i]
-                        row[f'top{i+1}_token'] = tokens[pos]
-                        row[f'top{i+1}_weight'] = f"{valid_attention[pos]:.4f}"
-                    else:
-                        row[f'top{i+1}_token'] = ''
-                        row[f'top{i+1}_weight'] = ''
-
+            valid_indices = [i for i, t in enumerate(tokens) if i < sample['seq_len']]
             
-            # 隐藏状态统计
-            hidden = sample['hidden'][0]  # CLS向量
-            row['hidden_mean'] = f"{np.mean(hidden):.4f}"
-            row['hidden_std'] = f"{np.std(hidden):.4f}"
-            row['hidden_max'] = f"{np.max(hidden):.4f}"
-
+            if sample['attention'] is not None and len(valid_indices) > 0:
+                valid_attention = sample['attention'][:sample['seq_len']][valid_indices]
+                if len(valid_attention) > 0:
+                    sorted_indices = np.argsort(-valid_attention)
+                    for i in range(5):
+                        if i < len(sorted_indices) and sorted_indices[i] < len(tokens):
+                            pos = sorted_indices[i]
+                            row[f'top{i+1}_token'] = tokens[pos]
+                            row[f'top{i+1}_weight'] = f"{valid_attention[pos]:.4f}"
+                        else:
+                            row[f'top{i+1}_token'] = ''; row[f'top{i+1}_weight'] = ''
+            
+            if sample['hidden'] is not None:
+                hidden = sample['hidden'][0]
+                row['hidden_mean'] = f"{np.mean(hidden):.4f}"
+                row['hidden_std'] = f"{np.std(hidden):.4f}"
+                row['hidden_max'] = f"{np.max(hidden):.4f}"
             writer.writerow(row)
-    
-    for idx, sample in enumerate(wrong_samples[:20]):  # 只可视化前20个样本
-        try:
-            # 注意力可视化
-
-            valid_length = sample['seq_len']
-            attn = sample['attention'][:valid_length]
-            tokens = tokenizer.convert_ids_to_tokens(sample['input_ids'])
-            tokens = [t for t in tokens if t not in ['[CLS]', '[SEP]', '[PAD]', '[UNK]']]
-            valid_indices = [i for i in range(min(len(tokens), valid_length))]
-            tokens = [tokens[i] for i in valid_indices]
-            attn = sample['attention'][:valid_length][valid_indices]
-        except Exception as e:
-            print(f"Error visualizing sample {idx}: {str(e)}")
 
     precision_macro = metrics.precision_score(labels_all, predict_all, average='macro')
     recall_macro = metrics.recall_score(labels_all, predict_all, average='macro')
@@ -592,13 +380,11 @@ def test(config, model, test_iter):
     recall_weighted = metrics.recall_score(labels_all, predict_all, average='weighted')
     f1_weighted = metrics.f1_score(labels_all, predict_all, average='weighted')
 
-    # 获取模型参数
     batch_size = config.batch_size
     learning_rate = config.learning_rate
     num_epochs = config.num_epochs
-    dropout = getattr(config, 'dropout', 0.1)  # 确保config有dropout参数
+    dropout = getattr(config, 'dropout', 0.1)
 
-    # 打印结果矩阵
     print("\nFinal Result Matrix:")
     print("+------------------+----------------+")
     print("| Parameter        | Value          |")
@@ -619,95 +405,9 @@ def test(config, model, test_iter):
     print(f"| F1 (Weight)      | {f1_weighted:<14.4f} |")
     print("+------------------+----------------+")
 
-    # 原始输出保持精简
     msg = 'Test Loss: {0:>5.2},  Test Acc: {1:>6.2%}'
     print(msg.format(test_loss, test_acc))
-    print("Time usage:", get_time_dif(start_time)) 
+    print("Time usage:", get_time_dif(start_time))
     
-    
-    
-# def train(config, model, train_iter, dev_iter, test_iter, train_data):
-    
-#     class_counts = np.array([175, 486, 201, 259, 37, 402, 346])  # 你实际的类别样本数替换
-#     # class_counts = np.array([175, 486, 201, 259, 37, 402, 346])  # 你实际的类别样本数替换
-#     weights = 1.0 / class_counts
-#     weights = weights / weights.sum() * len(class_counts)
-#     weights = torch.tensor(weights, dtype=torch.float).to(config.device)
-    
-#     start_time = time.time()
-#     model.train()
-#     param_optimizer = list(model.named_parameters())
-#     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-#     optimizer_grouped_parameters = [
-#         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-#         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}]
-#     optimizer = BertAdam(optimizer_grouped_parameters,
-#                          lr=config.learning_rate,
-#                          warmup=0.05,
-#                          t_total=len(train_iter) * config.num_epochs)
-    
-
-#     total_batch = 0  # 记录进行到多少batch
-#     dev_best_loss = float('inf')
-#     last_improve = 0  # 记录上次验证集loss下降的batch数
-#     flag = False  # 记录是否很久没有效果提升
-#     model.train()
-#     for epoch in range(config.num_epochs):
-#         print('Epoch [{}/{}]'.format(epoch + 1, config.num_epochs))
-#         for i, (trains, labels) in enumerate(train_iter):
-#             outputs = model(trains)
-#             model.zero_grad()
-#             # loss = F.cross_entropy(outputs, labels)
-#             loss = F.cross_entropy(outputs, labels, weight=weights)
-#             loss.backward()
-#             optimizer.step()
-#             if total_batch % 100 == 0:
-#                 # 每多少轮输出在训练集和验证集上的效果
-#                 true = labels.data.cpu()
-#                 predic = torch.max(outputs.data, 1)[1].cpu()
-#                 train_acc = metrics.accuracy_score(true, predic)
-#                 dev_acc, dev_loss = evaluate(config, model, dev_iter)
-#                 if dev_loss < dev_best_loss:
-#                     dev_best_loss = dev_loss
-#                     torch.save(model.state_dict(), config.save_path)
-#                     improve = '*'
-#                     last_improve = total_batch
-#                 else:
-#                     improve = ''
-#                 time_dif = get_time_dif(start_time)
-#                 msg = 'Iter: {0:>6},  Train Loss: {1:>5.2},  Train Acc: {2:>6.2%},  Val Loss: {3:>5.2},  Val Acc: {4:>6.2%},  Time: {5} {6}'
-#                 print(msg.format(total_batch, loss.item(), train_acc, dev_loss, dev_acc, time_dif, improve))
-#                 model.train()
-#             total_batch += 1
-#             if total_batch - last_improve > config.require_improvement:
-#                 # 验证集loss超过1000batch没下降，结束训练
-#                 print("No optimization for a long time, auto-stopping...")
-#                 flag = True
-#                 break
-#         if flag:
-#             break
-#     test(config, model, test_iter)
-
-#     # 打印基础测试结果
-#     msg = 'Test Loss: {0:>5.2},  Test Acc: {1:>6.2%}'
-#     print(msg.format(test_loss, test_acc))
-#     print("Precision, Recall and F1-Score...")
-#     print(test_report)
-#     print("Confusion Matrix...")
-#     print(test_confusion)
-#     time_dif = get_time_dif(start_time)
-#     print("Time usage:", time_dif)
-    
-#     # 打印部分错误样本
-#     print(f"\n误分类样本数: {len(wrong_samples)}")
-#     for i, sample in enumerate(wrong_samples[:10]):  # 打印前10个错误
-#         print(f"样本 {i+1}:")
-#         print(f"文本: {sample['text']}")
-#         print(f"真实标签: {config.class_list[sample['true']]}")
-#         print(f"预测标签: {config.class_list[sample['pred']]}\n")
-
-#     txt_path = os.path.join(save_dir, "misclassified.txt")
-#     with open(txt_path, 'w', encoding='utf-8') as f:
-#         for sample in wrong_samples:
-#             f.write(f"文本: {sample['text']}\n真实: {config.class_list[sample['true']]}\n预测: {config.class_list[sample['pred']]}\n\n")
-            
+    # 【修改】返回结果以便外部脚本画图
+    return test_acc, f1_macro
