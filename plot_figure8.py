@@ -48,7 +48,7 @@ labels = [l.get_label() for l in lines]
 ax1.legend(lines, labels, loc='lower center', fontsize=12)
 
 # 6. 设置标题和布局
-plt.title(r'Impact of Adversarial Perturbation ($\epsilon$) on Model Performance', fontsize=16, pad=15)
+plt.title(r"", fontsize=16, pad=15)
 plt.tight_layout()
 
 # 7. 保存图片
