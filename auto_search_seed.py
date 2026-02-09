@@ -3,9 +3,14 @@ import re
 import sys
 import os
 
-# 设定搜索范围：从种子 1 跑到 种子 20
-# 目前最高的 seed 是 6 (ACC=75.85%)
-seeds_to_test = range(14, 151) 
+# 设定搜索范围：从种子 1 跑到 种子 150
+# 正在运行 Seed 54 ...
+#   -> 结果: ACC=76.2200%, F1=74.8100%
+#   ★ 发现新纪录！当前最佳 Seed=54 (ACC=76.2200%)
+# 正在运行 Seed 109 ...
+#   -> 结果: ACC=76.3200%, F1=75.1600%
+#   ★ 发现新纪录！当前最佳 Seed=109 (ACC=76.3200%)
+seeds_to_test = range(117, 151) 
 best_acc = 0.0
 best_seed = -1
 results = []

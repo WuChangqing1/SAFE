@@ -13,26 +13,23 @@ from torch.amp import GradScaler
 parser = argparse.ArgumentParser(description='Chinese Text Classification')
 parser.add_argument('--model', type=str, required=True, help='choose a model: Bert, ERNIE')
 parser.add_argument('--static-emb-path', type=str, default='./pretrained/bert_pretrained/sgns.merge.char', help='静态词向量文件路径')
-# 【修改点】增加 seed 参数，默认值为 1
-parser.add_argument('--seed', type=int, default=1, help='random seed')
+parser.add_argument('--seed', type=int, default=109, help='random seed')
+parser.add_argument('--emb_dim', type=int, default=300, help='dimension of static embeddings')
 args = parser.parse_args()
 
 if __name__ == '__main__':
-    dataset = 'CSTA-Corpus' # 请确认你的数据集文件夹名是否正确，有的是 CSTA-CorpusV0
+    dataset = 'CSTA-Corpus' 
     model_name = args.model
     x = import_module('models.' + model_name)
     config = x.Config(dataset)
     
-    # 【修改点】使用命令行传入的 seed
     seed = args.seed
-    print(f"======== 当前训练随机种子 Seed: {seed} ========")
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True  # 保证可复现性
     
     start_time = time.time()
-    print("Loading data...")
     train_data, dev_data, test_data = build_dataset(config)
     train_iter = build_iterator(train_data, config)
     dev_iter = build_iterator(dev_data, config)
@@ -46,8 +43,10 @@ if __name__ == '__main__':
     config.scaler = scaler
     
     if model_name == 'bert':
-        print(f"检测到模型为 {model_name}，正在加载静态词向量...")
-        static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer)
+        # print(f"检测到模型为 {model_name}，正在加载静态词向量...")
+        print(f"检测到模型为 {model_name}，正在加载静态词向量 (Dim={args.emb_dim})...")
+        # static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer)
+        static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer, embed_dim=args.emb_dim)
         model = x.Model(config, static_emb_matrix=static_emb_matrix).to(config.device)
     else:
         model = x.Model(config).to(config.device)

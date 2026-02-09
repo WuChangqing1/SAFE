@@ -62,7 +62,7 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
     # FGM对抗训练初始化
     fgm = FGM(model)
     # 【新增】获取动态 epsilon，默认为 1.0 (兼容普通训练和敏感性分析)
-    epsilon_val = getattr(config, 'fgm_epsilon', 1.2)
+    epsilon_val = getattr(config, 'fgm_epsilon', 1.0)
     print(f"当前 FGM 对抗扰动幅度 epsilon: {epsilon_val}")
 
     total_batch = 0

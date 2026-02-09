@@ -37,6 +37,8 @@ class Config(object):
 
         self.tokenizer = BertTokenizer.from_pretrained(self.bert_path)
 
+        # 【新增】增加静态词向量维度参数，默认300
+        self.static_embed_dim = 300
         # 为了形状匹配，需要将hidden_size改为768
         # self.hidden_size = 1024
         self.hidden_size = 768
@@ -78,7 +80,7 @@ class Model(nn.Module):
             param.requires_grad = True
         
         # 静态词向量Embedding层（兼容混合精度）
-        self.static_embed_dim = 300
+        self.static_embed_dim = config.static_embed_dim
         self.static_embedding = nn.Embedding(
             num_embeddings=config.tokenizer.vocab_size,
             embedding_dim=self.static_embed_dim,
