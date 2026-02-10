@@ -62,7 +62,7 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
     # FGM对抗训练初始化
     fgm = FGM(model)
     # 【新增】获取动态 epsilon，默认为 1.0 (兼容普通训练和敏感性分析)
-    epsilon_val = getattr(config, 'fgm_epsilon', 1.0)
+    epsilon_val = getattr(config, 'fgm_epsilon', 1.2)
     print(f"当前 FGM 对抗扰动幅度 epsilon: {epsilon_val}")
 
     total_batch = 0
@@ -138,7 +138,10 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
         if flag:
             break
     
-    # 【修改】train 函数现在返回 test 的结果，方便外部脚本收集数据
+    if torch.cuda.is_available():
+        max_mem_bytes = torch.cuda.max_memory_allocated()
+        max_mem_mb = max_mem_bytes / 1024 / 1024
+        print(f"BENCHMARK_MEMORY_MB: {max_mem_mb:.2f}")
     return test(config, model, test_iter)
 
 
