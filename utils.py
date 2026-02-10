@@ -182,22 +182,16 @@ class ContrastiveLoss(nn.Module):
 #     return torch.tensor(emb_matrix, dtype=torch.float32)  # 保持float32，兼容混合精度
 
 def load_static_embedding(emb_path, tokenizer, embed_dim=300):
-    """
-    加载静态词向量（兼容混合精度，支持自动切片）
-    如果文件中的向量维度大于 embed_dim，则自动截取前 embed_dim 维。
-    """
     # 随机初始化默认字典
     emb_dict = defaultdict(lambda: np.random.normal(0, 0.01, embed_dim).astype(np.float32))
     
     with open(emb_path, 'r', encoding='utf-8') as f:
         for line in tqdm(f, desc=f"Loading {embed_dim}d Embeddings"):
             line = line.strip().split()
-            # 只要该行的列数足够（单词+向量），就进行处理
             if len(line) < embed_dim + 1:
                 continue
             
             word = line[0]
-            # 【关键修改】只取前 embed_dim 个数值
             vec_data = line[1:embed_dim+1] 
             vec = np.array([float(x) for x in vec_data], dtype=np.float32)
             emb_dict[word] = vec
@@ -205,14 +199,9 @@ def load_static_embedding(emb_path, tokenizer, embed_dim=300):
     vocab_size = tokenizer.vocab_size
     emb_matrix = np.zeros((vocab_size, embed_dim), dtype=np.float32)
     for token, idx in tokenizer.vocab.items():
-        # 如果词表中存在该词，则使用加载的向量；否则使用默认的随机向量
         if token in emb_dict:
             emb_matrix[idx] = emb_dict[token]
-        # 注意：这里不需要 else，因为 zeros 已经初始化了，或者可以用默认字典逻辑
-        # 为了严谨，这里可以直接赋值：
-        # emb_matrix[idx] = emb_dict[token] # defaultdict 会处理未登录词
     
-    # 再次遍历确保所有词都有值（处理 defaultdict 的逻辑）
     for token, idx in tokenizer.vocab.items():
         emb_matrix[idx] = emb_dict[token]
 
@@ -224,7 +213,6 @@ class FGM():
         self.backup = {}
 
     def attack(self, epsilon=1.0, emb_name='word_embeddings'):
-        # 这里的 emb_name 需要根据你的 BERT 结构调整，通常是 word_embeddings
         for name, param in self.model.named_parameters():
             if param.requires_grad and emb_name in name:
                 self.backup[name] = param.data.clone()
