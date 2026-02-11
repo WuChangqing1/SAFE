@@ -78,7 +78,7 @@ Cooperatively realized by `run.py`, `train_eval.py` and `utils.py`, it provides 
 ```base
 pip install torch==2.7.1+cu128 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-pip install transformers==4.57.0 scikit-learn numpy matplotlib tqdm
+pip install -r requirements.txt
 ```
 
 ## Usage
