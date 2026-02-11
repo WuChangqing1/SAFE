@@ -1,4 +1,3 @@
-# coding: UTF-8
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +35,6 @@ class Config(object):
         self.dropout = 0.1
 
 class Model(nn.Module):
-    # 修改这里：删除了 static_emb_matrix=None
     def __init__(self, config):
         super(Model, self).__init__()
         self.bert = BertModel.from_pretrained(config.bert_path)

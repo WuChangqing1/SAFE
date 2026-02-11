@@ -1,4 +1,3 @@
-# coding: UTF-8
 import time
 import torch
 import numpy as np
@@ -27,7 +26,7 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True  # 保证可复现性
+    torch.backends.cudnn.deterministic = True
     
     start_time = time.time()
     train_data, dev_data, test_data = build_dataset(config)
@@ -43,7 +42,6 @@ if __name__ == '__main__':
     config.scaler = scaler
     
     if model_name == 'bert':
-        # print(f"检测到模型为 {model_name}，正在加载静态词向量...")
         print(f"检测到模型为 {model_name}，正在加载静态词向量 (Dim={args.emb_dim})...")
         # static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer)
         static_emb_matrix = load_static_embedding(args.static_emb_path, config.tokenizer, embed_dim=args.emb_dim)
@@ -54,5 +52,4 @@ if __name__ == '__main__':
     # 训练
     acc, f1 = train(config, model, train_iter, dev_iter, test_iter, train_data)
     
-    # 【关键】最后打印一行特定的格式，方便我们用脚本抓取结果
     print(f"FINAL_RESULT: Seed={seed}, ACC={acc:.4f}, F1={f1:.4f}")

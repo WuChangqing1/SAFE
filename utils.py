@@ -1,5 +1,3 @@
-# coding: UTF-8
-# coding: UTF-8
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
@@ -54,7 +52,7 @@ class DatasetIterater(object):
             self.residue = True
         self.index = 0
         self.device = device
-        self.return_contents = return_contents  # 新增标
+        self.return_contents = return_contents
 
     def _to_tensor(self, datas):
         x = torch.LongTensor([_[0] for _ in datas]).to(self.device)
@@ -138,19 +136,17 @@ class ContrastiveLoss(nn.Module):
         if batch_size == 0:
             return torch.tensor(0.0).to(embeddings.device)
         
-        # 1. 创建主对角线矩阵（自身样本掩码）
+        # 1. 创建主对角线矩阵
         mask_self = torch.eye(batch_size * 2, dtype=torch.bool).to(embeddings.device)
         
-        # 2. 创建移位batch_size的对角线矩阵（正样本对掩码）
-        # 方法：创建单位矩阵后，上下移位batch_size行
+        # 2. 创建移位batch_size的对角线矩阵
         mask_positive = torch.eye(batch_size * 2, dtype=torch.bool).to(embeddings.device)
-        mask_positive = torch.roll(mask_positive, shifts=batch_size, dims=0)  # 关键修正：用roll实现移位
+        mask_positive = torch.roll(mask_positive, shifts=batch_size, dims=0)
         
-        # 3. 合并掩码（排除自身和正样本对，只保留负样本）
+        # 3. 合并掩码
         mask = mask_self | mask_positive
         mask = ~mask
         
-        # 后续逻辑保持不变
         sim_matrix = F.cosine_similarity(embeddings.unsqueeze(1), embeddings.unsqueeze(0), dim=-1)
         sim_matrix = sim_matrix / self.temperature
         exp_sim = torch.exp(sim_matrix) * (~mask)
@@ -212,7 +208,7 @@ class FGM():
         self.model = model
         self.backup = {}
 
-    def attack(self, epsilon=1.0, emb_name='word_embeddings'):
+    def attack(self, epsilon=0.5, emb_name='word_embeddings'):
         for name, param in self.model.named_parameters():
             if param.requires_grad and emb_name in name:
                 self.backup[name] = param.data.clone()

@@ -1,4 +1,3 @@
-# coding: UTF-8
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,7 +34,6 @@ class Config(object):
         self.dropout = 0.1
 
 class Model(nn.Module):
-    # 修改这里：删除了 static_emb_matrix=None
     def __init__(self, config):
         super(Model, self).__init__()
         self.bert = BertModel.from_pretrained(config.bert_path)
@@ -52,7 +50,6 @@ class Model(nn.Module):
         self.probabilities = None
         self.hidden_states = None
 
-    # ... (forward 函数保持不变) ...
     def forward(self, x):
         context = x[0]
         mask = x[2]

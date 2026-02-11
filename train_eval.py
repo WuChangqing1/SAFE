@@ -34,7 +34,6 @@ def init_network(model, method='xavier', exclude='embedding', seed=123):
                 pass
 
 def train(config, model, train_iter, dev_iter, test_iter, train_data):
-    # 1. 初始化显存统计 (用于论文显存分析)
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
@@ -59,10 +58,8 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
     
     scaler = config.scaler  # 获取梯度缩放器
 
-    # FGM对抗训练初始化
     fgm = FGM(model)
-    # 【新增】获取动态 epsilon，默认为 1.0 (兼容普通训练和敏感性分析)
-    epsilon_val = getattr(config, 'fgm_epsilon', 1.2)
+    epsilon_val = getattr(config, 'fgm_epsilon', 0.5)
     print(f"当前 FGM 对抗扰动幅度 epsilon: {epsilon_val}")
 
     total_batch = 0
@@ -83,8 +80,6 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
             model.zero_grad()
             scaler.scale(base_loss).backward()  # 缩放损失
             
-            # 2. FGM 对抗训练逻辑
-            # 【修改】使用动态 epsilon
             fgm.attack(epsilon=epsilon_val, emb_name='word_embeddings') 
             
             with autocast('cuda'): # 对抗样本的前向传播也要用混合精度
@@ -119,7 +114,6 @@ def train(config, model, train_iter, dev_iter, test_iter, train_data):
                 
                 time_dif = get_time_dif(start_time)
                 
-                # 【新增】显存监控逻辑
                 mem_info = ""
                 if torch.cuda.is_available():
                     # 获取真实的峰值显存 (MB)
@@ -164,7 +158,7 @@ def evaluate(config, model, data_iter, test=False):
             loss = F.cross_entropy(outputs, labels)
             loss_total += loss
             
-            # --- 兼容性处理 ---
+            # 兼容性处理
             attn_weights = getattr(model, 'attention_weights', None)
             if attn_weights is not None:
                 attn_weights = attn_weights.cpu().numpy()
@@ -177,7 +171,6 @@ def evaluate(config, model, data_iter, test=False):
             hidden_states = getattr(model, 'hidden_states', None)
             if hidden_states is not None:
                 hidden_states = hidden_states.cpu().numpy()
-            # -----------------
             
             labels_np = labels.cpu().numpy()
             predic = torch.max(outputs, 1)[1].cpu().numpy()
@@ -313,10 +306,6 @@ def save_correct_csv(samples, config, tokenizer, save_dir):
             writer.writerow(row)
     print(f"正确分类样本细节已保存到 {csv_path}")
 
-def visualize_samples(samples, tokenizer, save_dir, prefix="correct", max_samples=20):
-    # 这里保留你的可视化逻辑占位，或者你可以完善它
-    pass
-
 def test(config, model, test_iter):
     model.load_state_dict(torch.load(config.save_path))
     model.eval()
@@ -333,7 +322,6 @@ def test(config, model, test_iter):
     # 保存正确样本分析结果
     save_dir = os.path.join(config.dataset, "saved_dict")
     save_correct_csv(correct_samples, config, tokenizer, save_dir)
-    # visualize_samples(correct_samples, tokenizer, save_dir, "correct")
 
     # 保存误分类到CSV
     csv_path = os.path.join(save_dir, "misclassified_details.csv")
@@ -412,5 +400,4 @@ def test(config, model, test_iter):
     print(msg.format(test_loss, test_acc))
     print("Time usage:", get_time_dif(start_time))
     
-    # 【修改】返回结果以便外部脚本画图
     return test_acc, f1_macro

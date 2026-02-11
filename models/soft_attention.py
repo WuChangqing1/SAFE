@@ -1,4 +1,3 @@
-# coding: UTF-8
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,7 +53,6 @@ class Model(nn.Module):
         
         self.fc = nn.Linear(config.rnn_hidden * 2, config.num_classes)
 
-        # === 兼容性初始化 ===
         self.attention_weights = None
         self.probabilities = None
         self.hidden_states = None
@@ -75,7 +73,6 @@ class Model(nn.Module):
         
         att_score = F.softmax(att, dim=1) # [batch, seq, 1]
         
-        # === 保存注意力权重 [batch, seq] ===
         self.attention_weights = att_score.squeeze(-1).detach()
         
         # Weighted sum
@@ -94,12 +91,12 @@ class Model(nn.Module):
             # 计算 Attention 并聚合
             attn_out = self.attention_net(lstm_out, mask)
             
-            # === 保存隐层状态 ===
+            # 保存隐层状态
             self.hidden_states = attn_out.detach()
             
             logits = self.fc(attn_out)
             
-            # === 保存概率分布 ===
+            # 保存概率分布
             self.probabilities = F.softmax(logits, dim=1).detach()
             
         return logits

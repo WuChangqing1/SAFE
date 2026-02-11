@@ -27,17 +27,14 @@ class Config(object):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.require_improvement = 1200
         self.num_classes = len(self.class_list)
-        # self.num_epochs = 8
         self.num_epochs = 10
         self.batch_size = 64
         self.pad_size = 64
         self.learning_rate = 2e-5
-        # self.learning_rate = 2e-5
         self.bert_path = './pretrained/bert_pretrained'
 
         self.tokenizer = BertTokenizer.from_pretrained(self.bert_path)
 
-        # 【新增】增加静态词向量维度参数，默认300
         self.static_embed_dim = 300
         # 为了形状匹配，需要将hidden_size改为768
         # self.hidden_size = 1024
@@ -47,10 +44,9 @@ class Config(object):
         self.weight_decay = 0.1
         self.max_grad_norm = 1.0
         self.early_stop_patience = 3
-        self.visualize_num = 20  # 每类可视化样本数量
+        self.visualize_num = 20
 
 
-# 修改 Model 类中的注意力模块
 class MultiHeadAttentionPooling(nn.Module):
     def __init__(self, hidden_size, num_heads=4):
         super().__init__()
@@ -109,8 +105,8 @@ class Model(nn.Module):
         self.probabilities = None
 
     def forward(self, x):
-        context = x[0]  # [batch, seq_len]
-        mask = x[2]     # [batch, seq_len]
+        context = x[0]
+        mask = x[2]  
         
         with autocast('cuda'):  # 适配混合精度
             # 1. BERT Embedding（float16计算）
